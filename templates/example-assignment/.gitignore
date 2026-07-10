@@ -1,9 +1,0 @@
-# Compiled output
-*.o
-*.exe
-hello
-
-# Editor / OS noise
-.DS_Store
-.vscode/
-.idea/
