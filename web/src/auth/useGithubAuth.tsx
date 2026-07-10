@@ -211,6 +211,9 @@ function useGithubAuthState() {
   // Deep link (#71) stashed at code-exchange, consumed by the status-driven
   // effect below so navigation runs against an authenticated router context.
   const pendingReturnToRef = useRef<string | null>(null)
+  // Captures the returnTo value at mutate() time so the useMutation-level
+  // onSuccess (which survives Strict Mode's simulated unmount) can access it.
+  const codeExchangeReturnToRef = useRef<string | null>(null)
 
   const [screen, setScreen] = useState<GithubAuthScreen>("config")
   const [clientId, setClientId] = useState(GITHUB_OAUTH_CLIENT_ID)
@@ -251,6 +254,22 @@ function useGithubAuthState() {
 
   const exchangeCodeMutation = useMutation({
     mutationFn: exchangeWebCode,
+    // Use mutation-level callbacks (not per-call) so they fire even when the
+    // component is simulated-unmounted by React Strict Mode between the mutate()
+    // call and the async response. Per-call onSuccess/onError are tied to the
+    // observer instance and silently dropped on unmount.
+    onSuccess: (data) => {
+      completeSignIn(data)
+      // Defer the return until status is "authenticated" (effect below);
+      // navigating now would race the router context and bounce through the
+      // _authed guard (#71).
+      pendingReturnToRef.current = codeExchangeReturnToRef.current
+    },
+    onError: (err) => {
+      log.error("OAuth code exchange failed", { err, record: true })
+      setError(formatError(t, err))
+      setScreen("config")
+    },
   })
 
   const requestDeviceCodeMutation = useMutation({
@@ -326,7 +345,6 @@ function useGithubAuthState() {
     const params = new URLSearchParams(window.location.search)
     const code = params.get("code")
     const returnedState = params.get("state")
-
     // No code: recover a stranded "exchanging" screen — e.g. bfcache restored
     // this page after Back on GitHub's consent screen, leaving startWebFlow's
     // state with no code to exchange. Else the card spins forever (#oauth-hang).
@@ -369,27 +387,8 @@ function useGithubAuthState() {
     setScreen("exchanging")
     setError(null)
 
-    exchangeCodeMutation.mutate(
-      {
-        clientId: callbackClientId,
-        code,
-        verifier,
-      },
-      {
-        onSuccess: (data) => {
-          completeSignIn(data)
-          // Defer the return until status is "authenticated" (effect below);
-          // navigating now would race the router context and bounce through the
-          // _authed guard (#71).
-          pendingReturnToRef.current = returnTo
-        },
-        onError: (err) => {
-          log.error("OAuth code exchange failed", { err, record: true })
-          setError(formatError(t, err))
-          setScreen("config")
-        },
-      },
-    )
+    codeExchangeReturnToRef.current = returnTo
+    exchangeCodeMutation.mutate({ clientId: callbackClientId, code, verifier })
   }, [])
 
   // A bfcache restore freezes React state as-is with no effect re-run, so the

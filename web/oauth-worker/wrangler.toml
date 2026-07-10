@@ -1,0 +1,10 @@
+name = "classroom50-oauth"
+main = "index.js"
+compatibility_date = "2024-01-01"
+
+[vars]
+# Set your allowed origins (comma-separated). No secrets here.
+ALLOWED_ORIGINS = "http://localhost:5173,https://yourdomain.com"
+
+# Set the secret via CLI — do NOT put your client secret here:
+#   wrangler secret put GITHUB_CLIENT_SECRET
