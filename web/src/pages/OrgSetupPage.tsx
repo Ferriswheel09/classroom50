@@ -205,7 +205,8 @@ const OrgSetupPage = () => {
   const isOwner = orgMembership?.role === "admin"
   const isTeamOrEnterprise =
     orgPlanDetails?.plan?.name === "team" ||
-    orgPlanDetails?.plan?.name === "enterprise"
+    orgPlanDetails?.plan?.name === "enterprise" ||
+    orgPlanDetails?.plan?.name === "free"
 
   return (
     <PageShell page="classes" selected="assignments">

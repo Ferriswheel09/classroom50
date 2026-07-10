@@ -6,7 +6,6 @@
 export type PlanCategory = "supported" | "free" | "unknown"
 
 export function classifyPlan(name?: string): PlanCategory {
-  if (name === "team" || name === "enterprise") return "supported"
-  if (name === "free") return "free"
+  if (name === "team" || name === "enterprise" || name === "free") return "supported"
   return "unknown"
 }
