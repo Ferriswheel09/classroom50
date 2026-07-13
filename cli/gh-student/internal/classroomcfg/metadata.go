@@ -96,13 +96,14 @@ func Render(cfg Config) ([]byte, error) {
 	return yamlBytes, nil
 }
 
-// DropFiles commits `.classroom50.yaml` + the autograde workflow in one Tree
-// commit so the repo's initial shape lands atomically. This is the accept
-// commit; creating `.classroom50.yaml` here is what the runner uses to resolve
-// the Feedback-PR baseline (see MetadataPath). The commit message is
-// human-readable only. WaitForStableBranch polls first because GitHub doesn't
-// propagate the post-templated-repo commit ref synchronously (the contents API
-// briefly returns 409 "Git Repository is empty" otherwise).
+// DropFiles commits `.classroom50.yaml` (and optionally the autograde workflow)
+// in one Tree commit so the repo's initial shape lands atomically. This is the
+// accept commit; creating `.classroom50.yaml` here is what the runner uses to
+// resolve the Feedback-PR baseline (see MetadataPath). When workflowContent is
+// empty the autograde workflow is omitted (autograding disabled). The commit
+// message is human-readable only. WaitForStableBranch polls first because
+// GitHub doesn't propagate the post-templated-repo commit ref synchronously
+// (the contents API briefly returns 409 "Git Repository is empty" otherwise).
 func DropFiles(client githubapi.Client, owner, repo, branch string, cfg Config, workflowContent string) error {
 	if err := WaitForStableBranch(client, owner, repo, branch); err != nil {
 		return err
@@ -114,11 +115,13 @@ func DropFiles(client githubapi.Client, owner, repo, branch string, cfg Config, 
 	}
 
 	files := map[string]string{
-		MetadataPath:          string(metadataBytes),
-		AutogradeWorkflowPath: workflowContent,
+		MetadataPath: string(metadataBytes),
+	}
+	if workflowContent != "" {
+		files[AutogradeWorkflowPath] = workflowContent
 	}
 	return CommitFiles(client, owner, repo, branch,
-		contract.PrefixCommit("Initialize .classroom50.yaml and autograde workflow (gh student accept)"),
+		contract.PrefixCommit("Initialize .classroom50.yaml (gh student accept)"),
 		files)
 }
 

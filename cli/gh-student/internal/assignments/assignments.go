@@ -1,26 +1,35 @@
-// Package assignments owns the read side of the published classroom manifest:
-// the token-less GitHub Pages fetch of `assignments.json` and the autograder
-// workflow shim, plus the typed manifest shapes the student CLI consumes. The
-// Pages site is public by design, so this uses a plain net/http client (no
-// go-gh, no token) and depends only on the shared contract package + stdlib.
-// Consumed by accept (entry + autograder fetch) and invite (entry, for the
-// group-size cap).
+// Package assignments owns the read side of the classroom manifest:
+// the authenticated GitHub API fetch of `assignments.json` directly from the
+// config repo (FetchEntryFromRepo), plus the legacy token-less GitHub Pages
+// fetch (FetchEntry/fetchEntryFromURL) retained for best-effort callers
+// (submit display-name, invite group-size check) that fail gracefully when
+// Pages is absent. Consumed by accept, submit, and invite.
 package assignments
 
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
+	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
 
 	"github.com/foundation50/classroom50-cli-shared/contract"
 )
+
+// APIClient is the minimal authenticated GitHub API seam needed for
+// FetchEntryFromRepo. Satisfied structurally by internal/githubapi.Client so
+// the assignments package stays free of a hard dependency on that package.
+type APIClient interface {
+	Get(path string, resp interface{}) error
+}
 
 // configRepoName is the fixed per-org classroom config repo created by
 // `gh teacher init`. Hardcoded so the Pages URL builder stays aligned with the
@@ -134,6 +143,71 @@ func FetchEntry(ctx context.Context, org, classroom, secret, assignment string) 
 		return entry, fmt.Errorf("%w; if this is an unlisted classroom, you must pass the access key your instructor gave you with `--key <key>`", err)
 	}
 	return entry, err
+}
+
+// FetchEntryFromRepo fetches the assignment entry directly from the
+// classroom50 config repo via the authenticated GitHub Contents API. This
+// replaces the Pages-based FetchEntry for the accept path, requiring no GitHub
+// Pages (and therefore no Team/Enterprise plan): the student's auth token
+// provides access because gh teacher classroom add grants the classroom team
+// read on the config repo.
+//
+// The secret/unlisted-URL segment is not needed here — the repo path is always
+// <classroom>/assignments.json regardless of Pages obscurity settings.
+func FetchEntryFromRepo(ctx context.Context, client APIClient, org, classroom, assignment string) (Entry, error) {
+	apiPath := fmt.Sprintf("repos/%s/%s/contents/%s/assignments.json",
+		url.PathEscape(org),
+		url.PathEscape(configRepoName),
+		url.PathEscape(classroom),
+	)
+
+	var result struct {
+		Content  string `json:"content"`
+		Encoding string `json:"encoding"`
+	}
+	if err := client.Get(apiPath, &result); err != nil {
+		// Distinguish 404 (classroom missing or no access) from other errors.
+		// We don't have direct access to the HTTP status here, but the error
+		// message from go-gh contains "404" for not-found responses.
+		if strings.Contains(err.Error(), "404") {
+			return Entry{}, &NotFoundError{
+				Org:        org,
+				Classroom:  classroom,
+				Assignment: assignment,
+			}
+		}
+		return Entry{}, fmt.Errorf("GET %s: %w", apiPath, err)
+	}
+
+	if result.Encoding != "base64" {
+		return Entry{}, fmt.Errorf("%s: unexpected encoding %q (want base64)", apiPath, result.Encoding)
+	}
+
+	// GitHub base64-encodes file content with newlines every 60 chars.
+	decoded, err := base64.StdEncoding.DecodeString(strings.ReplaceAll(result.Content, "\n", ""))
+	if err != nil {
+		return Entry{}, fmt.Errorf("%s: base64 decode: %w", apiPath, err)
+	}
+
+	var file assignmentsFile
+	if err := json.Unmarshal(decoded, &file); err != nil {
+		return Entry{}, fmt.Errorf("%s: parse: %w", apiPath, err)
+	}
+	if file.Schema != assignmentsSchemaV1 {
+		return Entry{}, fmt.Errorf("%s: schema = %q, want %q — this gh-student version may be out of date; update and try again",
+			apiPath, file.Schema, assignmentsSchemaV1)
+	}
+
+	for _, entry := range file.Assignments {
+		if entry.Slug == assignment {
+			return entry, nil
+		}
+	}
+	return Entry{}, &NotFoundError{
+		Org:        org,
+		Classroom:  classroom,
+		Assignment: assignment,
+	}
 }
 
 // fetchEntryFromURL is the HTTP-bearing core. Returns actionable messages for

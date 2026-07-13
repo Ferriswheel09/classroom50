@@ -271,8 +271,12 @@ func initCmd() *cobra.Command {
 			}
 			step(initStepLabels[7])
 			if err := enablePages(client, stepOut, stepErr, org, configrepo.ConfigRepoName); err != nil {
-				prog.Abort()
-				return err
+				// Non-fatal: Pages is not required when students fetch
+				// assignments.json via the authenticated GitHub Contents API
+				// (the classroom team grants read on the config repo). This
+				// fails on free-plan orgs with a private config repo — warn
+				// and continue rather than aborting init.
+				_, _ = fmt.Fprintf(stepErr, "Warning: couldn't enable GitHub Pages (%v); Pages is not required when the classroom team has read access to the config repo (free-plan orgs use the authenticated API instead)\n", err)
 			}
 			step(initStepLabels[8])
 			if err := applyBranchProtection(client, stepOut, org, configrepo.ConfigRepoName, branch); err != nil {

@@ -243,14 +243,13 @@ func acceptAssignment(cmd *cobra.Command, client githubapi.Client, u *ui.UI, out
 	}
 	acceptedAt := time.Now().UTC().Format(time.RFC3339)
 
-	// 1) Look up the assignment entry on the public Pages site (no token).
-	//    The entry carries the template ref, mode, and autograder ref.
-	//    `secret` (the --key value) selects the `<classroom>/<secret>/...`
-	//    path for a protected classroom, else "" — it must arrive via --key
-	//    since students can't read the config repo.
+	// 1) Look up the assignment entry directly from the classroom50 config
+	//    repo via the authenticated GitHub API. The classroom team grants the
+	//    student read access, so no GitHub Pages (Team plan) is required.
+	//    `secret` is not needed for the repo lookup (it only affects Pages URLs).
 	lookup := u.Spinner(fmt.Sprintf("Looking up %s in %s/%s", assignment, org, classroom))
 	lookup.Start()
-	entry, err := assignments.FetchEntry(cmd.Context(), org, classroom, secret, assignment)
+	entry, err := assignments.FetchEntryFromRepo(cmd.Context(), client, org, classroom, assignment)
 	if err != nil {
 		lookup.Fail(fmt.Sprintf("Looking up %s", assignment))
 		return err
@@ -271,21 +270,8 @@ func acceptAssignment(cmd *cobra.Command, client githubapi.Client, u *ui.UI, out
 			assignment, entry.Template.Owner, entry.Template.Repo, entry.Template.Branch)
 	}
 
-	// 2) Resolve the autograder shim *before* creating the repo so a
-	//    non-default-autograder fetch failure doesn't leave a half-baked repo
-	//    on the teacher's org. The default autograder uses the embedded shim
-	//    (no Pages fetch); other names fetch from Pages.
-	autograderName := entry.ResolveAutograder()
-	var shim string
-	if autograderName == contract.DefaultAutograderName {
-		shim = renderEmbeddedShim(org)
-	} else {
-		workflow, err := assignments.FetchAutograderWorkflow(cmd.Context(), org, classroom, secret, autograderName)
-		if err != nil {
-			return err
-		}
-		shim = workflow.Content
-	}
+	// 2) Autograding is disabled; no shim is written to the student repo.
+	//    The accept commit will contain only .classroom50.yaml.
 
 	// 3) Create the assignment repo (templated → generate; template-less →
 	//    empty auto-init'd). Already-exists is NOT a terminal short-circuit: a
@@ -341,8 +327,6 @@ func acceptAssignment(cmd *cobra.Command, client githubapi.Client, u *ui.UI, out
 		repoName:       repoName,
 		branch:         commitBranch,
 		source:         cfgSource,
-		shim:           shim,
-		autograderName: autograderName,
 		fullName:       fullName,
 		htmlURL:        htmlURL,
 		alreadyExisted: alreadyExisted,
@@ -354,7 +338,7 @@ func acceptAssignment(cmd *cobra.Command, client githubapi.Client, u *ui.UI, out
 // acceptRepoParams carries the post-create inputs acceptIntoRepo needs.
 // Splitting this tail out of acceptAssignment makes the self-heal fork
 // testable end-to-end against an httptest GitHub server, without the up-front
-// Pages fetch.
+// API fetch.
 type acceptRepoParams struct {
 	org, classroom, assignment string
 	secret                     string
@@ -362,7 +346,6 @@ type acceptRepoParams struct {
 	ownerID                    *int64
 	acceptedAt                 string
 	source                     *classroomcfg.Source
-	shim, autograderName       string
 	fullName, htmlURL          string
 	alreadyExisted             bool
 	createSp                   *ghui.Spinner
@@ -444,20 +427,19 @@ func provisionAcceptedRepo(client githubapi.Client, u *ui.UI, verbose bool, p ac
 		return err
 	}
 
-	// DropFiles lands both control files in one Tree commit, waiting out
+	// DropFiles lands .classroom50.yaml in one Tree commit, waiting out
 	// GitHub's post-create replication lag; the spinner animates throughout
 	// (no numeric counter — the wait has no guaranteed bound).
-	const setupMsg = "Setting up autograder and metadata"
+	const setupMsg = "Setting up metadata"
 	setupSp := u.Spinner(setupMsg)
 	setupSp.Start()
-	if err := classroomcfg.DropFiles(client, p.org, p.repoName, p.branch, cfg, p.shim); err != nil {
+	if err := classroomcfg.DropFiles(client, p.org, p.repoName, p.branch, cfg, ""); err != nil {
 		setupSp.Fail(setupMsg)
 		return err
 	}
-	setupSp.Stop("Autograder and metadata configured")
+	setupSp.Stop("Metadata configured")
 	if verbose {
-		u.Detail("wrote %s and %s in %s/%s (autograder %q)",
-			classroomcfg.MetadataPath, classroomcfg.AutogradeWorkflowPath, p.org, p.repoName, p.autograderName)
+		u.Detail("wrote %s in %s/%s", classroomcfg.MetadataPath, p.org, p.repoName)
 	}
 
 	// Read-back: a successful commit PATCH isn't proof the repo is readable

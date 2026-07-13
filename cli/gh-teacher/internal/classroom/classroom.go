@@ -202,11 +202,18 @@ func addClassroom(client githubapi.Client, out, errOut io.Writer, org, shortName
 	}
 
 	// Create (or adopt) the per-classroom team before scaffolding so its
-	// id/slug can be recorded in classroom.json. This team later lets rostered
-	// students read private org-owned templates.
+	// id/slug can be recorded in classroom.json. This team lets rostered
+	// students read private org-owned templates AND read assignments.json
+	// directly from the config repo via the GitHub API (no Pages required).
 	team, err := configrepo.EnsureClassroomTeam(client, org, shortName)
 	if err != nil {
 		return fmt.Errorf("create classroom team: %w", err)
+	}
+	// Grant the classroom team read on the config repo so `gh student accept`
+	// can fetch assignments.json via the authenticated Contents API instead of
+	// requiring GitHub Pages (which is a Team/Enterprise plan feature).
+	if _, err := configrepo.GrantTeamRepoRead(client, org, team.Slug, org, configrepo.ConfigRepoName); err != nil {
+		return fmt.Errorf("grant classroom team config-repo read: %w", err)
 	}
 
 	// Create (or adopt) the staff teams (instructor, ta), grant each write on
